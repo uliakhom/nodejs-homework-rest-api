@@ -3,6 +3,7 @@ const Joi = require("joi");
 
 const Contact = require("../../models/contact");
 const { createError } = require("../../helpers");
+const { authorize } = require("../../middlewares");
 
 const router = express.Router();
 
@@ -19,7 +20,11 @@ const contactFavoriteSchema = Joi.object({
 
 router.get("/", async (req, res, next) => {
   try {
-    const result = await Contact.find({}, "-createdAt -updatedAt");
+    const { _id: owner } = req.user;
+    const result = await Contact.find(
+      { owner },
+      "-createdAt -updatedAt"
+    ).populate("owner", "name email");
     res.json(result);
   } catch (error) {
     next(error);
@@ -39,13 +44,14 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", authorize, async (req, res, next) => {
   try {
+    const { _id: owner } = req.user;
     const { error } = contactSchema.validate(req.body);
     if (error) {
       throw createError(400, "missing required name field");
     }
-    const result = await Contact.create(req.body);
+    const result = await Contact.create({ ...req.body, owner });
     res.status(201).json(result);
   } catch (error) {
     next(error);
