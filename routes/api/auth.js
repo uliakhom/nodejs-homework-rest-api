@@ -7,9 +7,10 @@ const gravatar = require("gravatar");
 const path = require("path");
 const fs = require("fs/promises");
 const Jimp = require("jimp");
+const { nanoid } = require("nanoid");
 
 const User = require("../../models/user");
-const { createError } = require("../../helpers");
+const { createError, sendMail } = require("../../helpers");
 const { authorize, upload } = require("../../middlewares");
 
 const router = express.Router();
@@ -27,6 +28,10 @@ const userLoginSchema = Joi.object({
   password: Joi.string().min(6).required(),
 });
 
+const verifySchema = Joi.object({
+  email: Joi.string().pattern(emailRegexp).required(),
+});
+
 const { SECRET_KEY } = process.env;
 
 router.post("/register", async (req, res, next) => {
@@ -42,15 +47,70 @@ router.post("/register", async (req, res, next) => {
     }
     const hashPassword = await bcrypt.hash(password, 10);
     const avatarURL = gravatar.url(email);
+    const verificationToken = nanoid();
     const result = await User.create({
       name,
       email,
       password: hashPassword,
       avatarURL,
+      verificationToken,
     });
+    const mail = {
+      to: email,
+      subject: "Register verification",
+      html: `<a href="http://localhost:3000/api/auth/${verificationToken}">Press to apply registration</a>`,
+    };
+    await sendMail(mail);
     res.status(201).json({
       name: result.name,
       email: result.email,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/verify/:verificationToken", async (req, res, next) => {
+  try {
+    const { verificationToken } = req.params;
+    const user = await User.findOne({ verificationToken });
+    if (!user) {
+      throw createError(404, "User not found");
+    }
+    await User.findByIdAndUpdate(user._id, {
+      verificationToken: "",
+      verify: true,
+    });
+    res.json({
+      message: "Verification successful",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/verify", async (req, res, next) => {
+  try {
+    const { error } = verifySchema.validate(req.body);
+    if (error) {
+      throw createError(400);
+    }
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) {
+      throw createError(404);
+    }
+    if (user.verify) {
+      throw createError(400, "Verification has already been passed");
+    }
+    const mail = {
+      to: email,
+      subject: "Register verification",
+      html: `<a href="http://localhost:3000/api/auth/${user.verificationToken}">Press to apply registration</a>`,
+    };
+    await sendMail(mail);
+    res.json({
+      message: "Verification email sent",
     });
   } catch (error) {
     next(error);
@@ -68,6 +128,9 @@ router.post("/login", async (req, res, next) => {
     const passwordCompare = await bcrypt.compare(password, user?.password);
     if (!user || !passwordCompare) {
       throw createError(401, "Email or password is wrong");
+    }
+    if (!user.verify) {
+      throw createError(401, "Email not verify");
     }
     const payload = {
       id: user._id,
